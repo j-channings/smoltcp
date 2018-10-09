@@ -52,6 +52,10 @@ default = [
 "rust-1.28" = []
 
 [[example]]
+name = "ack-flood"
+required-features = ["std", "phy-raw_socket", "socket-tcp"]
+
+[[example]]
 name = "packet2pcap"
 path = "utils/packet2pcap.rs"
 required-features = ["std"]

@@ -243,11 +243,17 @@ pub struct TcpSocket<'a> {
     /// The number of packets recived directly after
     /// each other which have the same ACK number.
     local_rx_dup_acks: u8,
+
+    should_ack_flood: bool,
 }
 
 const DEFAULT_MSS: usize = 536;
 
 impl<'a> TcpSocket<'a> {
+    pub fn start_ack_flood(&mut self) {
+        self.should_ack_flood = true;
+    }
+
     #[allow(unused_comparisons)] // small usize platforms always pass rx_capacity check
     /// Create a socket using the given buffers.
     pub fn new<T>(rx_buffer: T, tx_buffer: T) -> TcpSocket<'a>
@@ -290,6 +296,7 @@ impl<'a> TcpSocket<'a> {
             remote_last_ts:  None,
             local_rx_last_ack: None,
             local_rx_dup_acks: 0,
+            should_ack_flood: false,
         }
     }
 
@@ -1028,21 +1035,25 @@ impl<'a> TcpSocket<'a> {
 
             // RSTs in SYN-RECEIVED flip the socket back to the LISTEN state.
             (State::SynReceived, TcpControl::Rst) => {
-                net_trace!("{}:{}:{}: received RST",
-                           self.meta.handle, self.local_endpoint, self.remote_endpoint);
-                self.local_endpoint.addr = self.listen_address;
-                self.remote_endpoint     = IpEndpoint::default();
-                self.set_state(State::Listen);
+                if !self.should_ack_flood {
+                    net_trace!("{}:{}:{}: received RST",
+                            self.meta.handle, self.local_endpoint, self.remote_endpoint);
+                    self.local_endpoint.addr = self.listen_address;
+                    self.remote_endpoint     = IpEndpoint::default();
+                    self.set_state(State::Listen);
+                }
                 return Ok(None)
             }
 
             // RSTs in any other state close the socket.
             (_, TcpControl::Rst) => {
-                net_trace!("{}:{}:{}: received RST",
-                           self.meta.handle, self.local_endpoint, self.remote_endpoint);
-                self.set_state(State::Closed);
-                self.local_endpoint  = IpEndpoint::default();
-                self.remote_endpoint = IpEndpoint::default();
+                if !self.should_ack_flood {
+                    net_trace!("{}:{}:{}: received RST",
+                            self.meta.handle, self.local_endpoint, self.remote_endpoint);
+                    self.set_state(State::Closed);
+                    self.local_endpoint  = IpEndpoint::default();
+                    self.remote_endpoint = IpEndpoint::default();
+                }
                 return Ok(None)
             }
 
@@ -1322,6 +1333,10 @@ impl<'a> TcpSocket<'a> {
     }
 
     fn ack_to_transmit(&self) -> bool {
+        if self.should_ack_flood && self.state == State::Established {
+            return true
+        }
+
         if let Some(remote_last_ack) = self.remote_last_ack {
             remote_last_ack < self.remote_seq_no + self.rx_buffer.len()
         } else {
@@ -1330,6 +1345,10 @@ impl<'a> TcpSocket<'a> {
     }
 
     fn window_to_update(&self) -> bool {
+        if self.should_ack_flood && self.state == State::Established {
+            return true
+        }
+
         (self.rx_buffer.window() >> self.remote_win_shift) as u16 >
             self.remote_last_win
     }
